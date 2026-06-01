@@ -67,4 +67,6 @@ startup (useful for finding capture/autofocus key names on a given body).
 - **Linux gotcha:** GNOME's `gvfs` auto-mounts cameras and locks the USB device.
   If the app reports "could not claim the USB device", run `gio mount -s gphoto2`
   (or `pkill -f gvfsd-gphoto2`) and hit **Retry**.
-- Saved composites land in `./captures/` (git-ignored).
+- Each session is saved to its own folder `./captures/photobooth-<timestamp>/`
+  containing the original camera files (`shot-1.jpg` … `shot-4.jpg`) and the
+  final `composite.png` (`./captures/` is git-ignored).

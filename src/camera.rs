@@ -21,7 +21,7 @@ pub const SHOTS: usize = 4;
 /// Seconds the on-screen countdown runs before each shot.
 const COUNTDOWN_SECS: u64 = 3;
 /// How long the just-captured photo is shown before the next countdown.
-const REVIEW: Duration = Duration::from_millis(1400);
+const REVIEW: Duration = Duration::from_millis(2000);
 /// Max texture side for review/composite display images (keeps GPU happy).
 const MAX_DISPLAY_SIDE: u32 = 1600;
 
@@ -164,6 +164,16 @@ fn run(ctx: EguiContext, cmd_rx: Receiver<Cmd>, tx: Sender<Event>) {
 fn run_session(ctx: &EguiContext, camera: &Camera, context: &Context, tx: &Sender<Event>) {
     let mut shots: Vec<RgbaImage> = Vec::with_capacity(SHOTS);
 
+    // Per-session folder for the individual shots and the composite. Best-effort:
+    // if it can't be created we still run the booth, just without saving.
+    let session_dir = match composite::new_session_dir() {
+        Ok(dir) => Some(dir),
+        Err(e) => {
+            eprintln!("[save] {e}");
+            None
+        }
+    };
+
     // Prime autofocus once when the shoot begins (live view must be active first).
     if let Ok(img) = grab_preview(camera, context) {
         let _ = tx.send(Event::Preview(img));
@@ -204,12 +214,18 @@ fn run_session(ctx: &EguiContext, camera: &Camera, context: &Context, tx: &Sende
         ctx.request_repaint();
         autofocus(camera);
         match capture_full(camera, context) {
-            Ok(img) => {
+            Ok(capture) => {
                 let _ = tx.send(Event::Captured {
                     index: shot,
-                    image: to_color_image(&downscale(&img, MAX_DISPLAY_SIDE)),
+                    image: to_color_image(&downscale(&capture.image, MAX_DISPLAY_SIDE)),
                 });
-                shots.push(img);
+                // Save the original camera file (shot-1.jpg, shot-2.jpg, …).
+                if let Some(dir) = &session_dir
+                    && let Err(e) = composite::save_shot(dir, shot + 1, &capture.bytes, &capture.ext)
+                {
+                    eprintln!("[save] shot {}: {e}", shot + 1);
+                }
+                shots.push(capture.image);
                 let _ = tx.send(Event::Status(Status::Review { shot }));
                 ctx.request_repaint();
                 thread::sleep(REVIEW);
@@ -227,13 +243,15 @@ fn run_session(ctx: &EguiContext, camera: &Camera, context: &Context, tx: &Sende
     ctx.request_repaint();
 
     let grid = composite::build(&shots);
-    let saved = match composite::save(&grid) {
-        Ok(path) => Some(path.display().to_string()),
-        Err(e) => {
-            let _ = tx.send(Event::Error(format!("Couldn't save photo: {e}")));
-            None
+    let saved = session_dir.as_ref().and_then(|dir| {
+        match composite::save_composite(dir, &grid) {
+            Ok(path) => Some(path.display().to_string()),
+            Err(e) => {
+                let _ = tx.send(Event::Error(format!("Couldn't save photo: {e}")));
+                None
+            }
         }
-    };
+    });
     let _ = tx.send(Event::Composite {
         image: to_color_image(&downscale(&grid, MAX_DISPLAY_SIDE)),
         saved,
@@ -330,7 +348,11 @@ fn log_config_tree(camera: &Camera) {
 fn log_widget(widget: &Widget, depth: usize) {
     let indent = "  ".repeat(depth);
     let name = widget.name();
-    let ro = if widget.readonly() { " [read-only]" } else { "" };
+    let ro = if widget.readonly() {
+        " [read-only]"
+    } else {
+        ""
+    };
     match widget {
         Widget::Group(group) => {
             eprintln!("[config] {indent}{name}/");
@@ -420,7 +442,15 @@ fn grab_preview(camera: &Camera, context: &Context) -> Result<ColorImage, String
 }
 
 /// Trigger the shutter, download the resulting file, and decode it.
-fn capture_full(camera: &Camera, context: &Context) -> Result<RgbaImage, String> {
+/// A single full capture: decoded for display/compositing, plus the original
+/// camera file bytes (and extension) so the raw shot can be saved verbatim.
+struct Capture {
+    image: RgbaImage,
+    bytes: Box<[u8]>,
+    ext: String,
+}
+
+fn capture_full(camera: &Camera, context: &Context) -> Result<Capture, String> {
     let path = camera
         .capture_image()
         .wait()
@@ -436,10 +466,19 @@ fn capture_full(camera: &Camera, context: &Context) -> Result<RgbaImage, String>
         .get_data(context)
         .wait()
         .map_err(|e| format!("Reading photo failed: {e}"))?;
-    let img = image::load_from_memory(&data)
+    let image = image::load_from_memory(&data)
         .map_err(|e| format!("Decoding photo failed: {e}"))?
         .to_rgba8();
-    Ok(img)
+    let ext = std::path::Path::new(&name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_else(|| "jpg".to_string());
+    Ok(Capture {
+        image,
+        bytes: data,
+        ext,
+    })
 }
 
 /// Convert an `image` RGBA buffer into an egui `ColorImage`.

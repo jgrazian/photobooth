@@ -1,6 +1,6 @@
 //! Builds the final 2x2 photo grid from the four captured shots.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use image::{Rgba, RgbaImage, imageops};
@@ -39,17 +39,28 @@ pub fn build(shots: &[RgbaImage]) -> RgbaImage {
     canvas
 }
 
-/// Save the composite under `./captures/photobooth-<unix-secs>.png`.
-pub fn save(image: &RgbaImage) -> Result<PathBuf, String> {
-    let dir = PathBuf::from("captures");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create captures dir: {e}"))?;
-
+/// Create a fresh timestamped session directory, `./captures/photobooth-<ts>/`,
+/// where this session's individual shots and composite are saved.
+pub fn new_session_dir() -> Result<PathBuf, String> {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let path = dir.join(format!("photobooth-{ts}.png"));
+    let dir = PathBuf::from("captures").join(format!("photobooth-{ts}"));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create session dir: {e}"))?;
+    Ok(dir)
+}
 
+/// Save an original camera capture (raw file bytes) as `shot-<n>.<ext>` in `dir`.
+pub fn save_shot(dir: &Path, index: usize, bytes: &[u8], ext: &str) -> Result<PathBuf, String> {
+    let path = dir.join(format!("shot-{index}.{ext}"));
+    std::fs::write(&path, bytes).map_err(|e| format!("write {}: {e}", path.display()))?;
+    Ok(path)
+}
+
+/// Save the finished grid as `composite.png` in `dir`.
+pub fn save_composite(dir: &Path, image: &RgbaImage) -> Result<PathBuf, String> {
+    let path = dir.join("composite.png");
     image.save(&path).map_err(|e| format!("save png: {e}"))?;
     Ok(path)
 }
