@@ -442,22 +442,31 @@ impl PhotoboothApp {
     fn draw_send_screen(&mut self, ui: &mut egui::Ui, full: Rect) {
         let sms = self.send_mode == SendMode::Sms;
         let cx = full.center().x;
+        let w = full.width();
+        let h = full.height();
 
+        // Title.
         let title = if sms {
             "Enter your phone number to get your photo"
         } else {
             "Enter your email to get your photo"
         };
+        let title_size = (h * 0.045).clamp(18.0, 34.0);
+        let title_y = full.min.y + h * 0.025;
         ui.painter().text(
-            Pos2::new(cx, full.min.y + 34.0),
+            Pos2::new(cx, title_y),
             Align2::CENTER_TOP,
             title,
-            FontId::proportional(34.0),
+            FontId::proportional(title_size),
             Color32::WHITE,
         );
 
-        // Typed-address display box.
-        let box_rect = Rect::from_center_size(Pos2::new(cx, full.min.y + 122.0), Vec2::new(820.0, 70.0));
+        // Typed value display box — deliberately compact (narrower and shorter
+        // than the keyboard) so the keypad has room on short screens.
+        let box_w = (w * 0.55).clamp(340.0, 560.0);
+        let box_h = (h * 0.085).clamp(38.0, 60.0);
+        let box_cy = title_y + title_size + box_h * 0.5 + 6.0;
+        let box_rect = Rect::from_center_size(Pos2::new(cx, box_cy), Vec2::new(box_w, box_h));
         ui.painter().rect_filled(box_rect, 10.0, Color32::from_rgb(32, 32, 40));
         ui.painter().rect_stroke(
             box_rect,
@@ -472,10 +481,10 @@ impl PhotoboothApp {
             (self.recipient_input.clone(), Color32::WHITE)
         };
         ui.painter().text(
-            box_rect.left_center() + Vec2::new(22.0, 0.0),
+            box_rect.left_center() + Vec2::new(16.0, 0.0),
             Align2::LEFT_CENTER,
             shown,
-            FontId::monospace(30.0),
+            FontId::monospace((box_h * 0.5).clamp(18.0, 28.0)),
             color,
         );
 
@@ -485,24 +494,32 @@ impl PhotoboothApp {
                 full.center(),
                 Align2::CENTER_CENTER,
                 "Sending…",
-                FontId::proportional(42.0),
+                FontId::proportional((h * 0.06).clamp(26.0, 42.0)),
                 Color32::WHITE,
             );
             return;
         }
 
+        // Reserve the bottom band for Send / Cancel before laying out the keys.
+        let btn_h = (h * 0.11).clamp(44.0, 80.0);
+        let btn_y = full.max.y - btn_h - h * 0.025;
+        let btn_w = (w * 0.3).clamp(170.0, 300.0);
+        let btn_gap = (w * 0.04).clamp(16.0, 40.0);
+
+        // Failure message sits just under the display box.
         if let Some(SendState::Failed(msg)) = &self.send_state {
             ui.painter().text(
-                Pos2::new(cx, full.min.y + 178.0),
+                Pos2::new(cx, box_rect.bottom() + 4.0),
                 Align2::CENTER_TOP,
                 format!("Couldn't send: {msg}"),
-                FontId::proportional(18.0),
+                FontId::proportional((h * 0.028).clamp(12.0, 18.0)),
                 Color32::from_rgb(240, 130, 130),
             );
         }
 
         // On-screen keyboard: a phone keypad in SMS mode, a QWERTY layout for
-        // email. Wider keys for the keypad since it has far fewer of them.
+        // email. Keys are sized to fit the band between the box and the buttons
+        // (height) and the window width — so the whole picker fits any screen.
         const PHONE_ROWS: [&[&str]; 4] = [
             &["1", "2", "3"],
             &["4", "5", "6"],
@@ -517,10 +534,25 @@ impl PhotoboothApp {
             &["@", ".", "_", "-", ".com", "Del"],
         ];
         let rows: &[&[&str]] = if sms { &PHONE_ROWS } else { &EMAIL_ROWS };
-        let kw = if sms { 150.0 } else { 100.0 };
-        let kh = 78.0;
-        let gap = if sms { 16.0 } else { 10.0 };
-        let y0 = full.min.y + 214.0;
+        let nrows = rows.len() as f32;
+        let max_cols = rows.iter().map(|r| r.len()).max().unwrap_or(1) as f32;
+
+        let gap = (w * 0.008).clamp(6.0, 16.0);
+        let kb_top = box_rect.bottom() + (h * 0.04).max(18.0);
+        let kb_bottom = btn_y - h * 0.02;
+        let band_h = (kb_bottom - kb_top).max(0.0);
+        let band_w = w * 0.96;
+
+        // Fit keys within both the band height and the available width; cap the
+        // width so the few keypad keys don't balloon on a wide screen.
+        let kh = ((band_h - gap * (nrows - 1.0)) / nrows).clamp(26.0, 88.0);
+        let kw_fit = (band_w - gap * (max_cols - 1.0)) / max_cols;
+        let kw = if sms { kw_fit.min(150.0) } else { kw_fit.min(110.0) };
+
+        // Vertically centre the key block within its band.
+        let block_h = kh * nrows + gap * (nrows - 1.0);
+        let y0 = kb_top + (band_h - block_h).max(0.0) * 0.5;
+
         let mut typed: Option<&str> = None;
         for (i, row) in rows.iter().enumerate() {
             let y = y0 + i as f32 * (kh + gap);
@@ -544,17 +576,13 @@ impl PhotoboothApp {
         }
 
         // Send / Cancel.
-        let btn_h = 80.0;
-        let by = full.max.y - btn_h - 28.0;
-        let bw = 300.0;
-        let bgap = 40.0;
-        let mut bx = cx - (bw * 2.0 + bgap) / 2.0;
-        let cancel_rect = Rect::from_min_size(Pos2::new(bx, by), Vec2::new(bw, btn_h));
+        let mut bx = cx - (btn_w * 2.0 + btn_gap) / 2.0;
+        let cancel_rect = Rect::from_min_size(Pos2::new(bx, btn_y), Vec2::new(btn_w, btn_h));
         if place_button(ui, cancel_rect, "Cancel", Color32::from_rgb(90, 90, 100), true) {
             self.cancel_send_entry();
         }
-        bx += bw + bgap;
-        let send_rect = Rect::from_min_size(Pos2::new(bx, by), Vec2::new(bw, btn_h));
+        bx += btn_w + btn_gap;
+        let send_rect = Rect::from_min_size(Pos2::new(bx, btn_y), Vec2::new(btn_w, btn_h));
         let valid = if sms {
             valid_phone(&self.recipient_input)
         } else {
@@ -601,7 +629,10 @@ fn place_button(ui: &mut egui::Ui, rect: Rect, label: &str, fill: Color32, enabl
 
 /// Place a single keyboard key filling `rect`. Returns whether it was tapped.
 fn place_key(ui: &mut egui::Ui, rect: Rect, label: &str) -> bool {
-    let size = if label.chars().count() > 1 { 24.0 } else { 30.0 };
+    // Scale the glyph to the key; multi-char labels (".com", "Del") get a
+    // smaller size so they don't overflow narrow keys.
+    let factor = if label.chars().count() > 1 { 0.30 } else { 0.42 };
+    let size = (rect.height() * factor).clamp(14.0, 34.0);
     let key = egui::Button::new(egui::RichText::new(label).size(size).color(Color32::WHITE))
         .fill(Color32::from_rgb(48, 48, 58))
         .corner_radius(10.0)
