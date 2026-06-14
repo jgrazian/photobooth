@@ -1,4 +1,4 @@
-//! Builds the final 2x2 photo grid from the four captured shots.
+//! Builds the final photo grid from the captured shots (1, 2, or 4 panels).
 //!
 //! An optional caption can be printed across the bottom border via the
 //! environment:
@@ -35,26 +35,28 @@ const DEFAULT_FONT_SIZE: f32 = 80.0;
 /// binary. Overridden by a `.ttf`/`.otf` path in `PHOTOBOOTH_BANNER_FONT`.
 const DEFAULT_FONT_TTF: &[u8] = include_bytes!("../assets/Tangerine-Regular.ttf");
 
-/// Arrange up to four shots into a 2x2 grid on a solid background.
+/// Arrange the shots onto a solid background, laid out by [`grid_dims`] for the
+/// shot count (1 single panel, 2 side-by-side, 4 in a 2x2 grid).
 ///
 /// The panel height is derived from the first shot's aspect ratio; every DSLR
 /// frame in a session shares the same ratio, so the grid stays uniform.
 pub fn build(shots: &[RgbaImage]) -> RgbaImage {
+    let (cols, rows) = grid_dims(shots.len());
     let (sw, sh) = shots
         .first()
         .map(|s| (s.width().max(1), s.height().max(1)))
         .unwrap_or((3, 2));
     let panel_h = ((u64::from(PANEL_W) * u64::from(sh)) / u64::from(sw)) as u32;
 
-    // Two outer borders plus one interior border across each axis.
-    let canvas_w = OUTER_BORDER * 2 + PANEL_W * 2 + INNER_BORDER;
-    let canvas_h = OUTER_BORDER * 2 + panel_h * 2 + INNER_BORDER;
+    // Two outer borders plus one interior border between each row/column.
+    let canvas_w = OUTER_BORDER * 2 + PANEL_W * cols + INNER_BORDER * (cols - 1);
+    let canvas_h = OUTER_BORDER * 2 + panel_h * rows + INNER_BORDER * (rows - 1);
     let mut canvas = RgbaImage::from_pixel(canvas_w, canvas_h, BG);
 
-    for (i, shot) in shots.iter().take(4).enumerate() {
+    for (i, shot) in shots.iter().take((cols * rows) as usize).enumerate() {
         let resized = imageops::resize(shot, PANEL_W, panel_h, imageops::FilterType::Triangle);
-        let col = (i % 2) as u32;
-        let row = (i / 2) as u32;
+        let col = i as u32 % cols;
+        let row = i as u32 / cols;
         let x = OUTER_BORDER + col * (PANEL_W + INNER_BORDER);
         let y = OUTER_BORDER + row * (panel_h + INNER_BORDER);
         imageops::overlay(&mut canvas, &resized, i64::from(x), i64::from(y));
@@ -64,6 +66,21 @@ pub fn build(shots: &[RgbaImage]) -> RgbaImage {
     overlay_banner_text(&mut canvas);
 
     canvas
+}
+
+/// Grid layout (columns, rows) for a given shot count: 1 ⇒ 1x1, 2 ⇒ 2x1
+/// (side-by-side), 4 ⇒ 2x2. Any other count falls back to a near-square grid.
+fn grid_dims(count: usize) -> (u32, u32) {
+    match count {
+        0 | 1 => (1, 1),
+        2 => (2, 1),
+        4 => (2, 2),
+        n => {
+            let cols = (n as f64).sqrt().ceil() as u32;
+            let rows = (n as u32).div_ceil(cols);
+            (cols, rows)
+        }
+    }
 }
 
 /// Render the composite *template* — solid black boxes in place of the four

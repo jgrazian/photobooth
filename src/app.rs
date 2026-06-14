@@ -12,7 +12,7 @@ use egui::{
     TextureOptions, Vec2,
 };
 
-use crate::camera::{self, Cmd, Event, Status, SHOTS};
+use crate::camera::{self, Cmd, Event, SessionConfig, Status};
 use crate::email;
 use crate::outbox;
 
@@ -74,6 +74,12 @@ pub struct PhotoboothApp {
     /// Transient caption shown in the control bar (e.g. after a successful send).
     toast: Option<String>,
 
+    /// Guest-chosen capture settings (shot count + countdown), edited via the
+    /// round config button and applied at the next [`Self::begin_session`].
+    config: SessionConfig,
+    /// `true` while the full-screen settings picker is up.
+    show_config: bool,
+
     /// How the finished photo is delivered (phone/iMessage vs. email).
     send_mode: SendMode,
     /// `Some` while the recipient-entry overlay is up.
@@ -94,6 +100,7 @@ impl PhotoboothApp {
         let egui_ctx = cc.egui_ctx.clone();
         egui_ctx.set_visuals(egui::Visuals::dark());
         let worker = camera::spawn(egui_ctx.clone());
+        let config = SessionConfig::default();
         Self {
             egui_ctx,
             cmd_tx: worker.cmd_tx,
@@ -104,6 +111,8 @@ impl PhotoboothApp {
             error: None,
             saved_path: None,
             toast: None,
+            config,
+            show_config: false,
             send_mode: SendMode::from_env(),
             send_state: None,
             recipient_input: String::new(),
@@ -111,7 +120,7 @@ impl PhotoboothApp {
             live: None,
             last_captured: None,
             composite: None,
-            thumbs: vec![None; SHOTS],
+            thumbs: vec![None; config.shots],
         }
     }
 
@@ -144,9 +153,9 @@ impl PhotoboothApp {
         self.last_captured = None;
         self.saved_path = None;
         self.toast = None;
-        self.thumbs = vec![None; SHOTS];
-        self.phase = Phase::Countdown { shot: 0, remaining: camera::COUNTDOWN_SECS as u32 };
-        let _ = self.cmd_tx.send(Cmd::Start);
+        self.thumbs = vec![None; self.config.shots];
+        self.phase = Phase::Countdown { shot: 0, remaining: self.config.countdown_secs as u32 };
+        let _ = self.cmd_tx.send(Cmd::Start(self.config));
     }
 
     /// Open the on-screen keyboard to collect a phone number (or email).
@@ -197,7 +206,7 @@ impl PhotoboothApp {
                 self.composite = None;
                 self.last_captured = None;
                 self.saved_path = None;
-                self.thumbs = vec![None; SHOTS];
+                self.thumbs = vec![None; self.config.shots];
                 self.toast = Some("Photo sent ✔".to_string());
                 self.phase = Phase::Ready;
                 let _ = self.cmd_tx.send(Cmd::Preview);
@@ -278,6 +287,13 @@ impl eframe::App for PhotoboothApp {
             return;
         }
 
+        // The settings picker likewise takes over the whole window.
+        if self.show_config {
+            ui.painter().rect_filled(full, 0.0, Color32::from_rgb(16, 16, 20));
+            self.draw_config_screen(ui, full);
+            return;
+        }
+
         // Otherwise: split the window into an image area (top) and control bar (bottom).
         let split_y = (full.max.y - BAR_H).max(full.min.y);
         let image_rect = Rect::from_min_max(full.min, Pos2::new(full.max.x, split_y));
@@ -294,6 +310,13 @@ impl eframe::App for PhotoboothApp {
 
         self.draw_image_area(ui, image_rect);
         self.draw_controls(ui, bar_rect);
+
+        // Round settings button, overlaid on the top-right of the live preview /
+        // finished photo. Only offered while idle, so the active shot count and
+        // timer can't change mid-session.
+        if matches!(self.phase, Phase::Ready | Phase::Finished) {
+            self.draw_config_button(ui, image_rect);
+        }
     }
 
     fn on_exit(&mut self) {
@@ -330,13 +353,15 @@ impl PhotoboothApp {
                     );
                 }
             }
-            Phase::Countdown { shot, remaining } => draw_countdown(ui, rect, shot, remaining),
+            Phase::Countdown { shot, remaining } => {
+                draw_countdown(ui, rect, shot, remaining, self.config.shots)
+            }
             Phase::Capturing { shot } => {
-                progress_badge(ui, rect, shot);
+                progress_badge(ui, rect, shot, self.config.shots);
                 center_message(ui, rect, "Smile!", Color32::WHITE);
             }
             Phase::Review { shot } => {
-                progress_badge(ui, rect, shot);
+                progress_badge(ui, rect, shot, self.config.shots);
                 corner_check(ui, rect);
             }
             Phase::Compositing => center_message(ui, rect, "Creating your photo…", Color32::WHITE),
@@ -596,7 +621,8 @@ impl PhotoboothApp {
     fn draw_thumb_strip(&self, ui: &mut egui::Ui, rect: Rect) {
         let size = 90.0;
         let gap = 12.0;
-        let total = SHOTS as f32 * size + (SHOTS as f32 - 1.0) * gap;
+        let n = self.thumbs.len().max(1) as f32;
+        let total = n * size + (n - 1.0) * gap;
         let mut x = rect.center().x - total / 2.0;
         let y = rect.bottom() - size - 20.0;
         for slot in &self.thumbs {
@@ -613,6 +639,199 @@ impl PhotoboothApp {
             );
             x += size + gap;
         }
+    }
+
+    /// Round settings button in the top-right of the image area. Its face is a
+    /// black-on-white icon of the currently chosen shot layout; tapping it opens
+    /// the settings picker.
+    fn draw_config_button(&mut self, ui: &mut egui::Ui, image_rect: Rect) {
+        let r = 34.0;
+        let margin = 24.0;
+        let center = Pos2::new(
+            image_rect.max.x - margin - r,
+            image_rect.min.y + margin + r,
+        );
+        let hit = Rect::from_center_size(center, Vec2::splat(r * 2.0));
+        let resp = ui.interact(hit, ui.id().with("config-btn"), egui::Sense::click());
+
+        // Darken behind the icon so it reads over a bright preview, and lift it
+        // slightly on hover.
+        ui.painter()
+            .circle_filled(center, r + 5.0, Color32::from_black_alpha(120));
+        let bg = if resp.hovered() {
+            Color32::WHITE
+        } else {
+            Color32::from_gray(235)
+        };
+        count_icon(ui.painter(), center, r, self.config.shots, Color32::BLACK, bg);
+
+        if resp.clicked() {
+            self.show_config = true;
+        }
+    }
+
+    /// Full-screen settings picker: choose the shot count (1 / 2 / 4) and the
+    /// countdown timer (3 / 5 / 7 seconds), then Done. Changes apply to the next
+    /// session.
+    fn draw_config_screen(&mut self, ui: &mut egui::Ui, full: Rect) {
+        let cx = full.center().x;
+        let (w, h) = (full.width(), full.height());
+
+        // Title.
+        let title_size = (h * 0.05).clamp(22.0, 40.0);
+        ui.painter().text(
+            Pos2::new(cx, full.min.y + h * 0.06),
+            Align2::CENTER_TOP,
+            "Photo Booth Settings",
+            FontId::proportional(title_size),
+            Color32::WHITE,
+        );
+
+        let label_size = (h * 0.035).clamp(16.0, 28.0);
+        let card = (w * 0.15).clamp(110.0, 200.0);
+        let gap = (w * 0.045).clamp(20.0, 56.0);
+
+        // --- Photos ---
+        let photos_label_y = full.min.y + h * 0.22;
+        ui.painter().text(
+            Pos2::new(cx, photos_label_y),
+            Align2::CENTER_CENTER,
+            "Photos",
+            FontId::proportional(label_size),
+            Color32::from_gray(190),
+        );
+        let photos_y = photos_label_y + h * 0.045;
+        let counts = [1usize, 2, 4];
+        let total = counts.len() as f32 * card + (counts.len() as f32 - 1.0) * gap;
+        let mut x = cx - total / 2.0;
+        for &n in &counts {
+            let rect = Rect::from_min_size(Pos2::new(x, photos_y), Vec2::splat(card));
+            if photo_card(ui, rect, n, self.config.shots == n) {
+                self.config.shots = n;
+            }
+            x += card + gap;
+        }
+
+        // --- Timer ---
+        let timer_label_y = photos_y + card + h * 0.06;
+        ui.painter().text(
+            Pos2::new(cx, timer_label_y),
+            Align2::CENTER_CENTER,
+            "Timer",
+            FontId::proportional(label_size),
+            Color32::from_gray(190),
+        );
+        let timer_y = timer_label_y + h * 0.045;
+        let secs = [3u64, 5, 7];
+        let tcard_h = (card * 0.62).clamp(64.0, 130.0);
+        let ttotal = secs.len() as f32 * card + (secs.len() as f32 - 1.0) * gap;
+        let mut tx = cx - ttotal / 2.0;
+        for &s in &secs {
+            let rect = Rect::from_min_size(Pos2::new(tx, timer_y), Vec2::new(card, tcard_h));
+            if timer_card(ui, rect, s, self.config.countdown_secs == s) {
+                self.config.countdown_secs = s;
+            }
+            tx += card + gap;
+        }
+
+        // Done.
+        let btn_w = (w * 0.3).clamp(180.0, 300.0);
+        let btn_h = (h * 0.1).clamp(48.0, 76.0);
+        let btn_rect = Rect::from_center_size(
+            Pos2::new(cx, full.max.y - h * 0.05 - btn_h / 2.0),
+            Vec2::new(btn_w, btn_h),
+        );
+        if place_button(ui, btn_rect, "Done", GREEN, true) {
+            self.show_config = false;
+        }
+    }
+}
+
+/// Colour used to highlight the selected settings card.
+const SELECT: Color32 = Color32::from_rgb(0, 120, 210);
+
+/// A selectable card showing the photo-layout icon plus the shot count. Returns
+/// whether it was tapped this frame.
+fn photo_card(ui: &mut egui::Ui, rect: Rect, count: usize, selected: bool) -> bool {
+    let resp = card_frame(ui, rect, ("photo-card", count), selected);
+    let icon_r = rect.height() * 0.26;
+    let icon_c = Pos2::new(rect.center().x, rect.top() + rect.height() * 0.40);
+    count_icon(ui.painter(), icon_c, icon_r, count, Color32::BLACK, Color32::WHITE);
+    ui.painter().text(
+        Pos2::new(rect.center().x, rect.bottom() - rect.height() * 0.16),
+        Align2::CENTER_CENTER,
+        count.to_string(),
+        FontId::proportional((rect.height() * 0.18).clamp(16.0, 30.0)),
+        Color32::WHITE,
+    );
+    resp.clicked()
+}
+
+/// A selectable card showing a countdown duration (e.g. "5s").
+fn timer_card(ui: &mut egui::Ui, rect: Rect, secs: u64, selected: bool) -> bool {
+    let resp = card_frame(ui, rect, ("timer-card", secs), selected);
+    ui.painter().text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        format!("{secs}s"),
+        FontId::proportional((rect.height() * 0.42).clamp(20.0, 44.0)),
+        Color32::WHITE,
+    );
+    resp.clicked()
+}
+
+/// Paint the shared rounded background/selection frame for a settings card and
+/// return its click response.
+fn card_frame(ui: &mut egui::Ui, rect: Rect, id: impl std::hash::Hash, selected: bool) -> egui::Response {
+    let resp = ui.interact(rect, ui.id().with(id), egui::Sense::click());
+    let fill = if selected {
+        SELECT
+    } else if resp.hovered() {
+        Color32::from_rgb(52, 52, 64)
+    } else {
+        Color32::from_rgb(40, 40, 50)
+    };
+    ui.painter().rect_filled(rect, 14.0, fill);
+    if selected {
+        ui.painter().rect_stroke(
+            rect,
+            14.0,
+            Stroke::new(3.0, Color32::WHITE),
+            egui::StrokeKind::Inside,
+        );
+    }
+    resp
+}
+
+/// Draw a black-on-white "photo count" glyph centred on `center`: a filled
+/// circle of `bg`, with `count` rounded `fg` squares laid out the same way the
+/// finished grid is (1 single, 2 side-by-side, 4 in a 2x2).
+fn count_icon(
+    painter: &egui::Painter,
+    center: Pos2,
+    radius: f32,
+    count: usize,
+    fg: Color32,
+    bg: Color32,
+) {
+    painter.circle_filled(center, radius, bg);
+    let (cols, rows) = match count {
+        0 | 1 => (1u32, 1u32),
+        2 => (2, 1),
+        _ => (2, 2),
+    };
+    // Square region the dots live in, comfortably inside the circle.
+    let area = radius * 1.1;
+    let gap = area * 0.14;
+    let cell_w = (area - gap * (cols as f32 - 1.0)) / cols as f32;
+    let cell_h = (area - gap * (rows as f32 - 1.0)) / rows as f32;
+    let origin = center - Vec2::new(area, area) / 2.0;
+    for i in 0..count.max(1) {
+        let col = (i as u32 % cols) as f32;
+        let row = (i as u32 / cols) as f32;
+        let min = origin + Vec2::new(col * (cell_w + gap), row * (cell_h + gap));
+        let cell = Rect::from_min_size(min, Vec2::new(cell_w, cell_h));
+        painter.rect_filled(cell, cell_w.min(cell_h) * 0.18, fg);
     }
 }
 
@@ -711,7 +930,7 @@ fn paint_fit(ui: &egui::Ui, rect: Rect, tex: Option<&TextureHandle>) {
 }
 
 /// Big translucent countdown number over the live preview.
-fn draw_countdown(ui: &egui::Ui, rect: Rect, shot: usize, remaining: u32) {
+fn draw_countdown(ui: &egui::Ui, rect: Rect, shot: usize, remaining: u32, total: usize) {
     let painter = ui.painter();
     let center = rect.center();
     painter.circle_filled(center, 130.0, Color32::from_black_alpha(140));
@@ -722,14 +941,14 @@ fn draw_countdown(ui: &egui::Ui, rect: Rect, shot: usize, remaining: u32) {
         FontId::proportional(190.0),
         Color32::WHITE,
     );
-    progress_badge(ui, rect, shot);
+    progress_badge(ui, rect, shot, total);
 }
 
-/// "Photo N of 4" badge at the top of the screen.
-fn progress_badge(ui: &egui::Ui, rect: Rect, shot: usize) {
+/// "Photo N of M" badge at the top of the screen.
+fn progress_badge(ui: &egui::Ui, rect: Rect, shot: usize, total: usize) {
     let painter = ui.painter();
     let pos = rect.center_top() + Vec2::new(0.0, 30.0);
-    let text = format!("Photo {} of {}", shot + 1, SHOTS);
+    let text = format!("Photo {} of {}", shot + 1, total);
     let galley = painter.layout_no_wrap(text, FontId::proportional(26.0), Color32::WHITE);
     let pad = Vec2::new(18.0, 8.0);
     let bg = Rect::from_center_size(pos, galley.size() + pad * 2.0);

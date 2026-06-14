@@ -16,10 +16,25 @@ use image::{RgbaImage, imageops};
 
 use crate::composite;
 
-/// Number of shots taken per session.
-pub const SHOTS: usize = 4;
-/// Seconds the on-screen countdown runs before each shot.
-pub const COUNTDOWN_SECS: u64 = 5;
+/// Per-session capture settings chosen by the guest via the on-screen config
+/// button: how many shots to take and how long the countdown runs before each.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct SessionConfig {
+    /// Number of shots taken per session (1, 2, or 4).
+    pub shots: usize,
+    /// Seconds the on-screen countdown runs before each shot (3, 5, or 7).
+    pub countdown_secs: u64,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            shots: 4,
+            countdown_secs: 5,
+        }
+    }
+}
+
 /// How long the just-captured photo is shown before the next countdown.
 const REVIEW: Duration = Duration::from_millis(2000);
 /// Max texture side for review/composite display images (keeps GPU happy).
@@ -27,8 +42,8 @@ const MAX_DISPLAY_SIDE: u32 = 1600;
 
 /// Commands sent from the UI to the camera thread.
 pub enum Cmd {
-    /// Begin a four-shot photobooth session.
-    Start,
+    /// Begin a photobooth session with the given shot count and timer.
+    Start(SessionConfig),
     /// Resume idle live preview (e.g. after a finished set was sent).
     Preview,
     /// Shut the worker down (sent on app exit).
@@ -59,7 +74,7 @@ pub enum Event {
 pub enum Status {
     /// No session running; live preview is showing.
     Idle,
-    /// Counting down to shot `shot` (0-based); `remaining` runs COUNTDOWN_SECS..=1.
+    /// Counting down to shot `shot` (0-based); `remaining` runs countdown_secs..=1.
     Countdown { shot: usize, remaining: u32 },
     /// Triggering the shutter for `shot`.
     Capturing { shot: usize },
@@ -129,8 +144,8 @@ fn run(ctx: EguiContext, cmd_rx: Receiver<Cmd>, tx: Sender<Event>) {
 
     loop {
         match cmd_rx.try_recv() {
-            Ok(Cmd::Start) => {
-                run_session(&ctx, &camera, &context, &tx);
+            Ok(Cmd::Start(cfg)) => {
+                run_session(&ctx, &camera, &context, &tx, cfg);
                 streaming = false;
             }
             Ok(Cmd::Preview) => {
@@ -160,9 +175,16 @@ fn run(ctx: EguiContext, cmd_rx: Receiver<Cmd>, tx: Sender<Event>) {
     }
 }
 
-/// Run one full four-shot session: countdown, capture, review, then composite.
-fn run_session(ctx: &EguiContext, camera: &Camera, context: &Context, tx: &Sender<Event>) {
-    let mut shots: Vec<RgbaImage> = Vec::with_capacity(SHOTS);
+/// Run one full session (`cfg.shots` shots): countdown, capture, review, then
+/// composite.
+fn run_session(
+    ctx: &EguiContext,
+    camera: &Camera,
+    context: &Context,
+    tx: &Sender<Event>,
+    cfg: SessionConfig,
+) {
+    let mut shots: Vec<RgbaImage> = Vec::with_capacity(cfg.shots);
 
     // Per-session folder for the individual shots and the composite. Best-effort:
     // if it can't be created we still run the booth, just without saving.
@@ -181,7 +203,7 @@ fn run_session(ctx: &EguiContext, camera: &Camera, context: &Context, tx: &Sende
     }
     autofocus(camera);
 
-    for shot in 0..SHOTS {
+    for shot in 0..cfg.shots {
         // Wake live view (it stops after each capture) so the countdown shows a
         // live feed and autofocus has an image to work with at capture time.
         if let Ok(img) = grab_preview(camera, context) {
@@ -191,14 +213,14 @@ fn run_session(ctx: &EguiContext, camera: &Camera, context: &Context, tx: &Sende
 
         // --- Countdown, with live preview running underneath ---
         let start = Instant::now();
-        let total = Duration::from_secs(COUNTDOWN_SECS);
+        let total = Duration::from_secs(cfg.countdown_secs);
         let mut last_remaining = u32::MAX;
         loop {
             let elapsed = start.elapsed();
             if elapsed >= total {
                 break;
             }
-            let remaining = COUNTDOWN_SECS as u32 - elapsed.as_secs() as u32; // 5, 4, 3, 2, 1
+            let remaining = cfg.countdown_secs as u32 - elapsed.as_secs() as u32; // e.g. 5, 4, 3, 2, 1
             if remaining != last_remaining {
                 last_remaining = remaining;
                 let _ = tx.send(Event::Status(Status::Countdown { shot, remaining }));
