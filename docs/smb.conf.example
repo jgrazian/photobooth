@@ -2,7 +2,8 @@
 #
 # Append this stanza to /etc/samba/smb.conf on the LINUX BOOTH, then:
 #   sudo smbpasswd -a <youruser>      # set this user's Samba password
-#   sudo systemctl enable --now smbd  # start Samba at boot
+#   sudo systemctl enable --now smb   # start Samba at boot (Fedora/RHEL/Arch/openSUSE;
+#                                     #   on Debian/Ubuntu the unit is named smbd)
 #   sudo firewall-cmd --add-service=samba --permanent && sudo firewall-cmd --reload
 #
 # The booth writes composites here (PHOTOBOOTH_OUTBOX=/srv/photobooth/outbox);

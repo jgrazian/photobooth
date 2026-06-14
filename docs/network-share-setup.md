@@ -41,12 +41,20 @@ Append the share definition to `/etc/samba/smb.conf` — see
 
 ```sh
 sudo smbpasswd -a "$USER"                 # set your Samba password
-sudo systemctl enable --now smbd          # start Samba now + at boot
+
+# Start Samba now + at boot. The unit name is distro-specific:
+#   Fedora / RHEL / Arch / openSUSE : smb
+#   Debian / Ubuntu                 : smbd
+# Find yours with:  systemctl list-unit-files | grep -iE 'smb|samba|nmb'
+sudo systemctl enable --now smb           # (use smbd on Debian/Ubuntu)
 
 # Open the firewall (firewalld shown)
 sudo firewall-cmd --add-service=samba --permanent
 sudo firewall-cmd --reload
 ```
+
+(`nmb`/`nmbd` is a separate, optional NetBIOS discovery daemon — not needed when
+the Mac connects by hostname or IP.)
 
 Run the booth pointed at that folder:
 

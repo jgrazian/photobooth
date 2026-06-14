@@ -252,6 +252,13 @@ const BLUE: Color32 = Color32::from_rgb(0, 120, 210);
 
 impl eframe::App for PhotoboothApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // F11 toggles fullscreen.
+        if ui.input(|i| i.key_pressed(egui::Key::F11)) {
+            let fullscreen = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fullscreen));
+        }
+
         self.pump_events();
         self.poll_send();
 
