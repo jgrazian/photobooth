@@ -1,6 +1,6 @@
 //! Builds the final photo grid from the captured shots (1, 2, or 4 panels).
 //!
-//! An optional caption can be printed across the bottom border via the
+//! An optional caption can be printed across the top border via the
 //! environment:
 //!
 //! - `PHOTOBOOTH_BANNER_TEXT` — the text to render (unset/blank ⇒ no caption).
@@ -115,7 +115,7 @@ fn overlay_banner(canvas: &mut RgbaImage) {
     imageops::overlay(canvas, &banner, i64::from(x), i64::from(y));
 }
 
-/// Optional caption rendered in black across the bottom outer border. Configured
+/// Optional caption rendered in black across the top outer border. Configured
 /// entirely from the environment (see the module docs).
 struct BannerText {
     text: String,
@@ -160,7 +160,7 @@ impl BannerText {
 }
 
 /// Draw the configured caption in black, horizontally centred and vertically
-/// centred within the bottom outer-border band. No-op when unconfigured; on any
+/// centred within the top outer-border band. No-op when unconfigured; on any
 /// failure (missing/invalid font) it logs and leaves the image untouched.
 fn overlay_banner_text(canvas: &mut RgbaImage) {
     let Some(cfg) = BannerText::from_env() else {
@@ -202,7 +202,7 @@ fn overlay_banner_text(canvas: &mut RgbaImage) {
         return; // nothing visible (e.g. all whitespace)
     };
     let canvas_w = canvas.width() as f32;
-    let band_center_y = canvas.height() as f32 - OUTER_BORDER as f32 / 2.0;
+    let band_center_y = OUTER_BORDER as f32 / 2.0;
     let offset_x = (canvas_w - (ink.max.x - ink.min.x)) / 2.0 - ink.min.x;
     let offset_y = band_center_y - (ink.max.y - ink.min.y) / 2.0 - ink.min.y;
 
