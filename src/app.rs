@@ -805,7 +805,7 @@ fn card_frame(ui: &mut egui::Ui, rect: Rect, id: impl std::hash::Hash, selected:
 
 /// Draw a black-on-white "photo count" glyph centred on `center`: a filled
 /// circle of `bg`, with `count` rounded `fg` squares laid out the same way the
-/// finished grid is (1 single, 2 side-by-side, 4 in a 2x2).
+/// finished grid is (1 single, 2 vertically stacked, 4 in a 2x2).
 fn count_icon(
     painter: &egui::Painter,
     center: Pos2,
@@ -817,7 +817,7 @@ fn count_icon(
     painter.circle_filled(center, radius, bg);
     let (cols, rows) = match count {
         0 | 1 => (1u32, 1u32),
-        2 => (2, 1),
+        2 => (1, 2),
         _ => (2, 2),
     };
     // Square region the dots live in, comfortably inside the circle.

@@ -1,5 +1,5 @@
-//! Photobooth: live DSLR preview, a 3-2-1 countdown, four shots, and a 2x2
-//! composite — driven by gphoto2 + egui.
+//! Photobooth: live DSLR preview, a countdown, a guest-chosen number of shots
+//! (1, 2, or 4), and a composite — driven by gphoto2 + egui.
 
 mod app;
 mod camera;
@@ -10,11 +10,14 @@ mod outbox;
 use app::PhotoboothApp;
 
 fn main() -> eframe::Result {
-    // `--template`: render just the composite layout (black boxes for photos,
-    // plus the banner/caption) to ./composite-template.jpg and exit — a quick
-    // way to iterate on the layout without a camera.
-    if std::env::args().skip(1).any(|a| a == "--template") {
-        match composite::render_template() {
+    // `--template [count]`: render just the composite layout (black boxes for
+    // photos, plus the banner/caption) for the given shot count (default 4) to
+    // ./composite-template.jpg and exit — a quick way to iterate on the layout
+    // without a camera.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--template") {
+        let count = args.iter().find_map(|a| a.parse::<usize>().ok()).unwrap_or(4);
+        match composite::render_template(count) {
             Ok(path) => println!("wrote composite template to {}", path.display()),
             Err(e) => eprintln!("template error: {e}"),
         }

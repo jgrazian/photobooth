@@ -36,7 +36,7 @@ const DEFAULT_FONT_SIZE: f32 = 80.0;
 const DEFAULT_FONT_TTF: &[u8] = include_bytes!("../assets/Tangerine-Regular.ttf");
 
 /// Arrange the shots onto a solid background, laid out by [`grid_dims`] for the
-/// shot count (1 single panel, 2 side-by-side, 4 in a 2x2 grid).
+/// shot count (1 single panel, 2 vertically stacked, 4 in a 2x2 grid).
 ///
 /// The panel height is derived from the first shot's aspect ratio; every DSLR
 /// frame in a session shares the same ratio, so the grid stays uniform.
@@ -68,12 +68,13 @@ pub fn build(shots: &[RgbaImage]) -> RgbaImage {
     canvas
 }
 
-/// Grid layout (columns, rows) for a given shot count: 1 ⇒ 1x1, 2 ⇒ 2x1
-/// (side-by-side), 4 ⇒ 2x2. Any other count falls back to a near-square grid.
+/// Grid layout (columns, rows) for a given shot count: 1 ⇒ 1x1, 2 ⇒ 1x2
+/// (vertically stacked), 4 ⇒ 2x2. Any other count falls back to a near-square
+/// grid.
 fn grid_dims(count: usize) -> (u32, u32) {
     match count {
         0 | 1 => (1, 1),
-        2 => (2, 1),
+        2 => (1, 2),
         4 => (2, 2),
         n => {
             let cols = (n as f64).sqrt().ceil() as u32;
@@ -83,13 +84,14 @@ fn grid_dims(count: usize) -> (u32, u32) {
     }
 }
 
-/// Render the composite *template* — solid black boxes in place of the four
-/// photos — and save it to `./composite-template.jpg`. Lets you iterate on the
-/// layout (borders, banner, caption) without a camera. Returns the saved path.
-pub fn render_template() -> Result<PathBuf, String> {
+/// Render the composite *template* — solid black boxes in place of the photos —
+/// for the given shot `count` (1, 2, or 4) and save it to
+/// `./composite-template.jpg`. Lets you iterate on the layout (borders, banner,
+/// caption) without a camera. Returns the saved path.
+pub fn render_template(count: usize) -> Result<PathBuf, String> {
     // A 3:2 black box stands in for each DSLR frame.
     let black = RgbaImage::from_pixel(1500, 1000, Rgba([0, 0, 0, 255]));
-    let shots = [black.clone(), black.clone(), black.clone(), black];
+    let shots: Vec<RgbaImage> = vec![black; count.max(1)];
     let grid = build(&shots);
     let path = PathBuf::from("composite-template.jpg");
     encode_jpg(&path, &grid)?;
@@ -268,6 +270,38 @@ pub fn save_composite(dir: &Path, image: &RgbaImage) -> Result<PathBuf, String> 
     let path = dir.join("composite.jpg");
     encode_jpg(&path, image)?;
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build, grid_dims};
+    use image::{Rgba, RgbaImage};
+
+    #[test]
+    fn grid_dims_for_supported_counts() {
+        assert_eq!(grid_dims(1), (1, 1));
+        assert_eq!(grid_dims(2), (1, 2));
+        assert_eq!(grid_dims(4), (2, 2));
+    }
+
+    #[test]
+    fn build_lays_out_each_count() {
+        // Canvas dimensions should grow with the column/row count for each
+        // supported layout, and building must never panic.
+        let panel = RgbaImage::from_pixel(1500, 1000, Rgba([0, 0, 0, 255]));
+        let make = |n: usize| build(&vec![panel.clone(); n]);
+
+        let one = make(1);
+        let two = make(2);
+        let four = make(4);
+
+        // 2 photos are vertically stacked: same width as 1, taller.
+        assert_eq!(two.width(), one.width());
+        assert!(two.height() > one.height());
+        // 4 photos add a second column: wider than 2, same height.
+        assert!(four.width() > two.width());
+        assert_eq!(four.height(), two.height());
+    }
 }
 
 /// Encode `image` to `path` as JPEG (alpha dropped, quality 88).
