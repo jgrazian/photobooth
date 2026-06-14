@@ -10,6 +10,17 @@ mod outbox;
 use app::PhotoboothApp;
 
 fn main() -> eframe::Result {
+    // `--template`: render just the composite layout (black boxes for photos,
+    // plus the banner/caption) to ./composite-template.jpg and exit — a quick
+    // way to iterate on the layout without a camera.
+    if std::env::args().skip(1).any(|a| a == "--template") {
+        match composite::render_template() {
+            Ok(path) => println!("wrote composite template to {}", path.display()),
+            Err(e) => eprintln!("template error: {e}"),
+        }
+        return Ok(());
+    }
+
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 820.0])

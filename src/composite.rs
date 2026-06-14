@@ -1,8 +1,17 @@
 //! Builds the final 2x2 photo grid from the four captured shots.
+//!
+//! An optional caption can be printed across the bottom border via the
+//! environment:
+//!
+//! - `PHOTOBOOTH_BANNER_TEXT` — the text to render (unset/blank ⇒ no caption).
+//! - `PHOTOBOOTH_BANNER_FONT_SIZE` — pixel size (default `48`).
+//! - `PHOTOBOOTH_BANNER_FONT` — path to a `.ttf`/`.otf` font file (defaults to
+//!   the bundled Tangerine font).
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use ab_glyph::{Font, FontVec, PxScale, ScaleFont, point};
 use image::{Rgba, RgbaImage, imageops};
 
 /// Width each captured shot is scaled to inside the grid.
@@ -19,6 +28,12 @@ const BG: Rgba<u8> = Rgba([250, 250, 250, 255]);
 /// Banner overlaid onto the bottom-left of the finished grid, embedded at build
 /// time so it travels with the binary regardless of the working directory.
 const BANNER_PNG: &[u8] = include_bytes!("../assets/banner.png");
+
+/// Default banner-text size when `PHOTOBOOTH_BANNER_FONT_SIZE` is unset.
+const DEFAULT_FONT_SIZE: f32 = 80.0;
+/// Default caption font, embedded at build time so it always ships with the
+/// binary. Overridden by a `.ttf`/`.otf` path in `PHOTOBOOTH_BANNER_FONT`.
+const DEFAULT_FONT_TTF: &[u8] = include_bytes!("../assets/Tangerine-Regular.ttf");
 
 /// Arrange up to four shots into a 2x2 grid on a solid background.
 ///
@@ -46,8 +61,22 @@ pub fn build(shots: &[RgbaImage]) -> RgbaImage {
     }
 
     overlay_banner(&mut canvas);
+    overlay_banner_text(&mut canvas);
 
     canvas
+}
+
+/// Render the composite *template* — solid black boxes in place of the four
+/// photos — and save it to `./composite-template.jpg`. Lets you iterate on the
+/// layout (borders, banner, caption) without a camera. Returns the saved path.
+pub fn render_template() -> Result<PathBuf, String> {
+    // A 3:2 black box stands in for each DSLR frame.
+    let black = RgbaImage::from_pixel(1500, 1000, Rgba([0, 0, 0, 255]));
+    let shots = [black.clone(), black.clone(), black.clone(), black];
+    let grid = build(&shots);
+    let path = PathBuf::from("composite-template.jpg");
+    encode_jpg(&path, &grid)?;
+    Ok(path)
 }
 
 /// Composite the embedded banner onto the bottom-left corner of the canvas,
@@ -65,6 +94,134 @@ fn overlay_banner(canvas: &mut RgbaImage) {
     let x = 0;
     let y = canvas.height().saturating_sub(banner.height());
     imageops::overlay(canvas, &banner, i64::from(x), i64::from(y));
+}
+
+/// Optional caption rendered in black across the bottom outer border. Configured
+/// entirely from the environment (see the module docs).
+struct BannerText {
+    text: String,
+    font_size: f32,
+    /// Override font path; `None` uses the embedded [`DEFAULT_FONT_TTF`].
+    font_path: Option<String>,
+}
+
+impl BannerText {
+    /// Read the caption config from the environment; `None` when no text is set.
+    fn from_env() -> Option<Self> {
+        let text = std::env::var("PHOTOBOOTH_BANNER_TEXT").ok()?;
+        if text.trim().is_empty() {
+            return None;
+        }
+        let font_size = std::env::var("PHOTOBOOTH_BANNER_FONT_SIZE")
+            .ok()
+            .and_then(|s| s.trim().parse::<f32>().ok())
+            .filter(|s| *s > 0.0)
+            .unwrap_or(DEFAULT_FONT_SIZE);
+        let font_path = std::env::var("PHOTOBOOTH_BANNER_FONT")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+        Some(Self {
+            text,
+            font_size,
+            font_path,
+        })
+    }
+
+    /// Load the configured font: the override path, or the embedded default.
+    fn load_font(&self) -> Result<FontVec, String> {
+        match &self.font_path {
+            Some(path) => {
+                let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
+                FontVec::try_from_vec(bytes).map_err(|e| format!("parse {path}: {e}"))
+            }
+            None => FontVec::try_from_vec(DEFAULT_FONT_TTF.to_vec())
+                .map_err(|e| format!("parse bundled font: {e}")),
+        }
+    }
+}
+
+/// Draw the configured caption in black, horizontally centred and vertically
+/// centred within the bottom outer-border band. No-op when unconfigured; on any
+/// failure (missing/invalid font) it logs and leaves the image untouched.
+fn overlay_banner_text(canvas: &mut RgbaImage) {
+    let Some(cfg) = BannerText::from_env() else {
+        return;
+    };
+    let font = match cfg.load_font() {
+        Ok(font) => font,
+        Err(e) => {
+            eprintln!("skip banner text: {e}");
+            return;
+        }
+    };
+
+    let scale = PxScale::from(cfg.font_size);
+    let scaled = font.as_scaled(scale);
+
+    // Lay the glyphs out along a provisional baseline (caret advances with
+    // kerning), keeping the rasterisable ones to position in a second pass.
+    let mut outlines = Vec::new();
+    let mut caret = 0.0f32;
+    let mut prev = None;
+    for c in cfg.text.chars() {
+        let id = font.glyph_id(c);
+        if let Some(p) = prev {
+            caret += scaled.kern(p, id);
+        }
+        let glyph = id.with_scale_and_position(scale, point(caret, 0.0));
+        caret += scaled.h_advance(id);
+        prev = Some(id);
+        if let Some(outline) = font.outline_glyph(glyph) {
+            outlines.push(outline);
+        }
+    }
+
+    // Centre on the actual ink bounds rather than font metrics — decorative
+    // faces (e.g. Tangerine) carry huge ascent/descent that would otherwise
+    // throw the text off the canvas.
+    let Some(ink) = ink_bounds(&outlines) else {
+        return; // nothing visible (e.g. all whitespace)
+    };
+    let canvas_w = canvas.width() as f32;
+    let band_center_y = canvas.height() as f32 - OUTER_BORDER as f32 / 2.0;
+    let offset_x = (canvas_w - (ink.max.x - ink.min.x)) / 2.0 - ink.min.x;
+    let offset_y = band_center_y - (ink.max.y - ink.min.y) / 2.0 - ink.min.y;
+
+    let (cw, ch) = (canvas.width(), canvas.height());
+    for outline in &outlines {
+        let bounds = outline.px_bounds();
+        outline.draw(|gx, gy, coverage| {
+            let px = bounds.min.x + offset_x + gx as f32;
+            let py = bounds.min.y + offset_y + gy as f32;
+            if px < 0.0 || py < 0.0 {
+                return;
+            }
+            let (px, py) = (px as u32, py as u32);
+            if px < cw && py < ch {
+                blend_black(canvas.get_pixel_mut(px, py), coverage);
+            }
+        });
+    }
+}
+
+/// Union of the pixel bounding boxes of every glyph, i.e. the text's ink
+/// extent. `None` when there are no drawable glyphs.
+fn ink_bounds(outlines: &[ab_glyph::OutlinedGlyph]) -> Option<ab_glyph::Rect> {
+    outlines
+        .iter()
+        .map(ab_glyph::OutlinedGlyph::px_bounds)
+        .reduce(|a, b| ab_glyph::Rect {
+            min: point(a.min.x.min(b.min.x), a.min.y.min(b.min.y)),
+            max: point(a.max.x.max(b.max.x), a.max.y.max(b.max.y)),
+        })
+}
+
+/// Alpha-blend a black pixel over `px` at the given glyph coverage (0..=1).
+fn blend_black(px: &mut Rgba<u8>, coverage: f32) {
+    let inv = 1.0 - coverage.clamp(0.0, 1.0);
+    px[0] = (px[0] as f32 * inv) as u8;
+    px[1] = (px[1] as f32 * inv) as u8;
+    px[2] = (px[2] as f32 * inv) as u8;
 }
 
 /// Create a fresh timestamped session directory, `./captures/photobooth-<ts>/`,
@@ -92,11 +249,16 @@ pub fn save_shot(dir: &Path, index: usize, bytes: &[u8], ext: &str) -> Result<Pa
 /// conversion step. JPEG has no alpha channel, so it's dropped before encoding.
 pub fn save_composite(dir: &Path, image: &RgbaImage) -> Result<PathBuf, String> {
     let path = dir.join("composite.jpg");
+    encode_jpg(&path, image)?;
+    Ok(path)
+}
+
+/// Encode `image` to `path` as JPEG (alpha dropped, quality 88).
+fn encode_jpg(path: &Path, image: &RgbaImage) -> Result<(), String> {
     let rgb = image::DynamicImage::ImageRgba8(image.clone()).into_rgb8();
     let mut file =
-        std::fs::File::create(&path).map_err(|e| format!("create {}: {e}", path.display()))?;
+        std::fs::File::create(path).map_err(|e| format!("create {}: {e}", path.display()))?;
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut file, 88)
         .encode_image(&rgb)
-        .map_err(|e| format!("encode jpg: {e}"))?;
-    Ok(path)
+        .map_err(|e| format!("encode jpg: {e}"))
 }

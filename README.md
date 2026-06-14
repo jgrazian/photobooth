@@ -126,6 +126,25 @@ FROM_ADDR="Photobooth <you@gmail.com>" cargo run --release
 Set `PHOTOBOOTH_DEBUG=1` to print the camera's full gPhoto2 config tree at
 startup (useful for finding capture/autofocus key names on a given body).
 
+## Composite layout
+
+The finished image is a 2×2 grid on an off-white card with a white border
+(the outer border is wider than the gaps between photos), the `assets/banner.png`
+graphic in the bottom-left, and an optional caption across the bottom border.
+
+| Variable                      | What it does                                       |
+| ----------------------------- | -------------------------------------------------- |
+| `PHOTOBOOTH_BANNER_TEXT`      | caption text, in black, centred along the bottom border (unset/blank ⇒ no caption) |
+| `PHOTOBOOTH_BANNER_FONT_SIZE` | caption pixel size (default `48`)                  |
+| `PHOTOBOOTH_BANNER_FONT`      | path to a `.ttf`/`.otf` font (default: bundled `assets/Tangerine-Regular.ttf`) |
+
+To preview the layout without a camera, render a template — black boxes in
+place of the four photos — to `./composite-template.jpg`:
+
+```sh
+PHOTOBOOTH_BANNER_TEXT="Joey's Wedding" cargo run -- --template
+```
+
 ## Notes
 
 - On connect the camera is set, best-effort, to a small JPEG captured to internal
