@@ -12,7 +12,7 @@ const INNER_BORDER: u32 = 24;
 /// White border around the edge of the canvas.
 const OUTER_BORDER: u32 = 100;
 /// Bounding box the banner is scaled to fit (preserving aspect ratio).
-const BANNER_BOX: u32 = 200;
+const BANNER_BOX: u32 = 600;
 /// Canvas background colour (the "paper" behind the photos).
 const BG: Rgba<u8> = Rgba([250, 250, 250, 255]);
 
@@ -50,8 +50,8 @@ pub fn build(shots: &[RgbaImage]) -> RgbaImage {
     canvas
 }
 
-/// Composite the embedded banner onto the bottom-left of the canvas, inset by
-/// the outer border so it aligns with the left and bottom edges of the panels.
+/// Composite the embedded banner onto the bottom-left corner of the canvas,
+/// flush to the edge so it sits over the outer white border.
 fn overlay_banner(canvas: &mut RgbaImage) {
     let banner = match image::load_from_memory(BANNER_PNG) {
         Ok(img) => img
@@ -62,10 +62,8 @@ fn overlay_banner(canvas: &mut RgbaImage) {
             return;
         }
     };
-    let x = OUTER_BORDER;
-    let y = canvas
-        .height()
-        .saturating_sub(OUTER_BORDER + banner.height());
+    let x = 0;
+    let y = canvas.height().saturating_sub(banner.height());
     imageops::overlay(canvas, &banner, i64::from(x), i64::from(y));
 }
 
