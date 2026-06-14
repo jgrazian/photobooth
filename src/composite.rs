@@ -9,8 +9,10 @@ use image::{Rgba, RgbaImage, imageops};
 const PANEL_W: u32 = 1000;
 /// White border between adjacent panels (the interior border).
 const INNER_BORDER: u32 = 24;
-/// White border around the edge of the canvas, twice the interior border.
-const OUTER_BORDER: u32 = INNER_BORDER * 2;
+/// White border around the edge of the canvas.
+const OUTER_BORDER: u32 = 100;
+/// Bounding box the banner is scaled to fit (preserving aspect ratio).
+const BANNER_BOX: u32 = 200;
 /// Canvas background colour (the "paper" behind the photos).
 const BG: Rgba<u8> = Rgba([250, 250, 250, 255]);
 
@@ -52,7 +54,9 @@ pub fn build(shots: &[RgbaImage]) -> RgbaImage {
 /// the outer border so it aligns with the left and bottom edges of the panels.
 fn overlay_banner(canvas: &mut RgbaImage) {
     let banner = match image::load_from_memory(BANNER_PNG) {
-        Ok(img) => img.into_rgba8(),
+        Ok(img) => img
+            .resize(BANNER_BOX, BANNER_BOX, imageops::FilterType::Triangle)
+            .into_rgba8(),
         Err(e) => {
             eprintln!("skip banner overlay: {e}");
             return;
