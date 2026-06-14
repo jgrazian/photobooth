@@ -19,7 +19,7 @@ use crate::composite;
 /// Number of shots taken per session.
 pub const SHOTS: usize = 4;
 /// Seconds the on-screen countdown runs before each shot.
-const COUNTDOWN_SECS: u64 = 3;
+pub const COUNTDOWN_SECS: u64 = 5;
 /// How long the just-captured photo is shown before the next countdown.
 const REVIEW: Duration = Duration::from_millis(2000);
 /// Max texture side for review/composite display images (keeps GPU happy).
@@ -59,7 +59,7 @@ pub enum Event {
 pub enum Status {
     /// No session running; live preview is showing.
     Idle,
-    /// Counting down to shot `shot` (0-based); `remaining` is 3..=1.
+    /// Counting down to shot `shot` (0-based); `remaining` runs COUNTDOWN_SECS..=1.
     Countdown { shot: usize, remaining: u32 },
     /// Triggering the shutter for `shot`.
     Capturing { shot: usize },
@@ -198,7 +198,7 @@ fn run_session(ctx: &EguiContext, camera: &Camera, context: &Context, tx: &Sende
             if elapsed >= total {
                 break;
             }
-            let remaining = COUNTDOWN_SECS as u32 - elapsed.as_secs() as u32; // 3, 2, 1
+            let remaining = COUNTDOWN_SECS as u32 - elapsed.as_secs() as u32; // 5, 4, 3, 2, 1
             if remaining != last_remaining {
                 last_remaining = remaining;
                 let _ = tx.send(Event::Status(Status::Countdown { shot, remaining }));

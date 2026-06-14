@@ -145,7 +145,7 @@ impl PhotoboothApp {
         self.saved_path = None;
         self.toast = None;
         self.thumbs = vec![None; SHOTS];
-        self.phase = Phase::Countdown { shot: 0, remaining: 3 };
+        self.phase = Phase::Countdown { shot: 0, remaining: camera::COUNTDOWN_SECS as u32 };
         let _ = self.cmd_tx.send(Cmd::Start);
     }
 
