@@ -21,7 +21,7 @@ const INNER_BORDER: u32 = 24;
 /// White border around the edge of the canvas.
 const OUTER_BORDER: u32 = 100;
 /// Bounding box the banner is scaled to fit (preserving aspect ratio).
-const BANNER_BOX: u32 = 500;
+const BANNER_BOX: u32 = 400;
 /// Canvas background colour (the "paper" behind the photos).
 const BG: Rgba<u8> = Rgba([250, 250, 250, 255]);
 
