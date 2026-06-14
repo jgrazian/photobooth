@@ -1,0 +1,31 @@
+# Example Samba share for the photobooth outbox.
+#
+# Append this stanza to /etc/samba/smb.conf on the LINUX BOOTH, then:
+#   sudo smbpasswd -a <youruser>      # set this user's Samba password
+#   sudo systemctl enable --now smbd  # start Samba at boot
+#   sudo firewall-cmd --add-service=samba --permanent && sudo firewall-cmd --reload
+#
+# The booth writes composites here (PHOTOBOOTH_OUTBOX=/srv/photobooth/outbox);
+# the Mac mounts this share and runs mac/imessage-watcher.sh against it.
+#
+# Edit the two values marked CHANGE ME.
+
+[outbox]
+    # CHANGE ME — the folder the booth writes to (must already exist):
+    #   sudo mkdir -p /srv/photobooth/outbox
+    #   sudo chown <youruser> /srv/photobooth/outbox
+    path = /srv/photobooth/outbox
+
+    comment = Photobooth outbox
+
+    # Allow the Mac to read images and write the sent/ + failed/ subfolders.
+    read only = no
+    browseable = yes
+
+    # Require a login (recommended). CHANGE ME to your Linux/Samba username.
+    guest ok = no
+    valid users = youruser
+
+    # Keep new files group-writable so both machines can move jobs around.
+    create mask = 0664
+    directory mask = 0775

@@ -5,6 +5,7 @@ mod app;
 mod camera;
 mod composite;
 mod email;
+mod outbox;
 
 use app::PhotoboothApp;
 

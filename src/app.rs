@@ -14,6 +14,29 @@ use egui::{
 
 use crate::camera::{self, Cmd, Event, Status, SHOTS};
 use crate::email;
+use crate::outbox;
+
+/// How the finished photo is delivered to the guest.
+///
+/// Default is [`SendMode::Sms`] (drop into the outbox for the Mac iMessage
+/// watcher); the original email path is kept available behind the
+/// `PHOTOBOOTH_SEND_MODE=email` flag.
+#[derive(Clone, Copy, PartialEq)]
+enum SendMode {
+    /// Collect a phone number; queue the photo into the outbox folder.
+    Sms,
+    /// Collect an email address; send the photo over SMTP.
+    Email,
+}
+
+impl SendMode {
+    fn from_env() -> Self {
+        match std::env::var("PHOTOBOOTH_SEND_MODE").ok().as_deref() {
+            Some(v) if v.eq_ignore_ascii_case("email") => SendMode::Email,
+            _ => SendMode::Sms,
+        }
+    }
+}
 
 /// What the UI is currently showing. Mirrors [`camera::Status`] but adds the
 /// connection lifecycle states the UI owns.
@@ -28,11 +51,11 @@ enum Phase {
     Error,
 }
 
-/// State of the email-entry overlay (shown on top of the finished screen).
+/// State of the recipient-entry overlay (shown on top of the finished screen).
 enum SendState {
-    /// Typing an address on the on-screen keyboard.
+    /// Typing a phone number / address on the on-screen keyboard.
     Editing,
-    /// Email is being sent in the background.
+    /// The photo is being delivered in the background (queued or emailed).
     Sending,
     /// Send failed; the message is shown and the keyboard stays up for a retry.
     Failed(String),
@@ -51,10 +74,12 @@ pub struct PhotoboothApp {
     /// Transient caption shown in the control bar (e.g. after a successful send).
     toast: Option<String>,
 
-    /// `Some` while the email-entry overlay is up.
+    /// How the finished photo is delivered (phone/iMessage vs. email).
+    send_mode: SendMode,
+    /// `Some` while the recipient-entry overlay is up.
     send_state: Option<SendState>,
-    /// Address being typed on the on-screen keyboard.
-    email_input: String,
+    /// Phone number or email address being typed on the on-screen keyboard.
+    recipient_input: String,
     /// Result channel for an in-flight background send.
     pending_send: Option<Receiver<Result<(), String>>>,
 
@@ -79,8 +104,9 @@ impl PhotoboothApp {
             error: None,
             saved_path: None,
             toast: None,
+            send_mode: SendMode::from_env(),
             send_state: None,
-            email_input: String::new(),
+            recipient_input: String::new(),
             pending_send: None,
             live: None,
             last_captured: None,
@@ -123,29 +149,34 @@ impl PhotoboothApp {
         let _ = self.cmd_tx.send(Cmd::Start);
     }
 
-    /// Open the on-screen keyboard to collect an email address.
-    fn open_email_entry(&mut self) {
-        self.email_input.clear();
+    /// Open the on-screen keyboard to collect a phone number (or email).
+    fn open_send_entry(&mut self) {
+        self.recipient_input.clear();
         self.send_state = Some(SendState::Editing);
     }
 
-    /// Close the email overlay without sending.
-    fn cancel_email_entry(&mut self) {
+    /// Close the recipient overlay without sending.
+    fn cancel_send_entry(&mut self) {
         self.send_state = None;
-        self.email_input.clear();
+        self.recipient_input.clear();
     }
 
-    /// Kick off the background email send for the current composite.
+    /// Kick off the background delivery of the current composite: queue it into
+    /// the outbox (SMS mode) or send it over SMTP (email mode).
     fn start_send(&mut self) {
         let Some(path) = self.saved_path.clone() else {
             self.send_state = Some(SendState::Failed("No saved photo to send".into()));
             return;
         };
-        let to = self.email_input.trim().to_string();
+        let to = self.recipient_input.trim().to_string();
+        let mode = self.send_mode;
         let ctx = self.egui_ctx.clone();
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
-            let result = email::send_photo(&to, Path::new(&path));
+            let result = match mode {
+                SendMode::Sms => outbox::queue(&to, Path::new(&path)),
+                SendMode::Email => email::send_photo(&to, Path::new(&path)),
+            };
             let _ = tx.send(result);
             ctx.request_repaint();
         });
@@ -162,7 +193,7 @@ impl PhotoboothApp {
             Ok(()) => {
                 // Reset back to the live "Take Photo" screen for the next guest.
                 self.send_state = None;
-                self.email_input.clear();
+                self.recipient_input.clear();
                 self.composite = None;
                 self.last_captured = None;
                 self.saved_path = None;
@@ -233,10 +264,10 @@ impl eframe::App for PhotoboothApp {
 
         let full = ui.max_rect();
 
-        // The email-entry overlay takes over the whole window when active.
+        // The recipient-entry overlay takes over the whole window when active.
         if self.send_state.is_some() {
             ui.painter().rect_filled(full, 0.0, Color32::from_rgb(16, 16, 20));
-            self.draw_email_screen(ui, full);
+            self.draw_send_screen(ui, full);
             return;
         }
 
@@ -315,7 +346,7 @@ impl PhotoboothApp {
     }
 
     /// Render the bottom control bar: the green "Take Photo" button (plus the
-    /// blue "Send to Text" button once a composite exists), or a Retry button
+    /// blue "Send Photo" button once a composite exists), or a Retry button
     /// while in the error state.
     fn draw_controls(&mut self, ui: &mut egui::Ui, bar: Rect) {
         let btn_h = 76.0;
@@ -355,7 +386,7 @@ impl PhotoboothApp {
         if show_send {
             let send_rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(send_w, btn_h));
             if place_button(ui, send_rect, "Send Photo", BLUE, true) {
-                self.open_email_entry();
+                self.open_send_entry();
             }
         }
 
@@ -398,15 +429,22 @@ impl PhotoboothApp {
         );
     }
 
-    /// Full-screen email-entry overlay: address display, on-screen QWERTY
-    /// keyboard, and Send / Cancel. Shown on top of the finished composite.
-    fn draw_email_screen(&mut self, ui: &mut egui::Ui, full: Rect) {
+    /// Full-screen recipient-entry overlay: the typed phone number / email,
+    /// an on-screen keypad (numeric in SMS mode, QWERTY in email mode), and
+    /// Send / Cancel. Shown on top of the finished composite.
+    fn draw_send_screen(&mut self, ui: &mut egui::Ui, full: Rect) {
+        let sms = self.send_mode == SendMode::Sms;
         let cx = full.center().x;
 
+        let title = if sms {
+            "Enter your phone number to get your photo"
+        } else {
+            "Enter your email to get your photo"
+        };
         ui.painter().text(
             Pos2::new(cx, full.min.y + 34.0),
             Align2::CENTER_TOP,
-            "Enter your email to get your photo",
+            title,
             FontId::proportional(34.0),
             Color32::WHITE,
         );
@@ -420,10 +458,11 @@ impl PhotoboothApp {
             Stroke::new(2.0, Color32::from_white_alpha(50)),
             egui::StrokeKind::Inside,
         );
-        let (shown, color) = if self.email_input.is_empty() {
-            ("you@example.com".to_string(), Color32::from_gray(110))
+        let placeholder = if sms { "+1 555 123 4567" } else { "you@example.com" };
+        let (shown, color) = if self.recipient_input.is_empty() {
+            (placeholder.to_string(), Color32::from_gray(110))
         } else {
-            (self.email_input.clone(), Color32::WHITE)
+            (self.recipient_input.clone(), Color32::WHITE)
         };
         ui.painter().text(
             box_rect.left_center() + Vec2::new(22.0, 0.0),
@@ -455,20 +494,28 @@ impl PhotoboothApp {
             );
         }
 
-        // On-screen keyboard.
-        const ROWS: [&[&str]; 5] = [
+        // On-screen keyboard: a phone keypad in SMS mode, a QWERTY layout for
+        // email. Wider keys for the keypad since it has far fewer of them.
+        const PHONE_ROWS: [&[&str]; 4] = [
+            &["1", "2", "3"],
+            &["4", "5", "6"],
+            &["7", "8", "9"],
+            &["+", "0", "Del"],
+        ];
+        const EMAIL_ROWS: [&[&str]; 5] = [
             &["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"],
             &["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"],
             &["a", "s", "d", "f", "g", "h", "j", "k", "l"],
             &["z", "x", "c", "v", "b", "n", "m"],
             &["@", ".", "_", "-", ".com", "Del"],
         ];
-        let kw = 100.0;
+        let rows: &[&[&str]] = if sms { &PHONE_ROWS } else { &EMAIL_ROWS };
+        let kw = if sms { 150.0 } else { 100.0 };
         let kh = 78.0;
-        let gap = 10.0;
+        let gap = if sms { 16.0 } else { 10.0 };
         let y0 = full.min.y + 214.0;
         let mut typed: Option<&str> = None;
-        for (i, row) in ROWS.iter().enumerate() {
+        for (i, row) in rows.iter().enumerate() {
             let y = y0 + i as f32 * (kh + gap);
             let total = row.len() as f32 * kw + (row.len() as f32 - 1.0) * gap;
             let mut x = cx - total / 2.0;
@@ -483,9 +530,9 @@ impl PhotoboothApp {
         if let Some(key) = typed {
             match key {
                 "Del" => {
-                    self.email_input.pop();
+                    self.recipient_input.pop();
                 }
-                other => self.email_input.push_str(other),
+                other => self.recipient_input.push_str(other),
             }
         }
 
@@ -497,11 +544,16 @@ impl PhotoboothApp {
         let mut bx = cx - (bw * 2.0 + bgap) / 2.0;
         let cancel_rect = Rect::from_min_size(Pos2::new(bx, by), Vec2::new(bw, btn_h));
         if place_button(ui, cancel_rect, "Cancel", Color32::from_rgb(90, 90, 100), true) {
-            self.cancel_email_entry();
+            self.cancel_send_entry();
         }
         bx += bw + bgap;
         let send_rect = Rect::from_min_size(Pos2::new(bx, by), Vec2::new(bw, btn_h));
-        if place_button(ui, send_rect, "Send", GREEN, valid_email(&self.email_input)) {
+        let valid = if sms {
+            valid_phone(&self.recipient_input)
+        } else {
+            valid_email(&self.recipient_input)
+        };
+        if place_button(ui, send_rect, "Send", GREEN, valid) {
             self.start_send();
         }
     }
@@ -550,6 +602,22 @@ fn place_key(ui: &mut egui::Ui, rect: Rect, label: &str) -> bool {
     ui.put(rect, key).clicked()
 }
 
+/// Minimal phone sanity check: only digits and common separators, with at
+/// least 10 digits (a full US-style number). A leading `+` is allowed for
+/// country codes.
+fn valid_phone(s: &str) -> bool {
+    let s = s.trim();
+    if s.is_empty() {
+        return false;
+    }
+    let digits = s.chars().filter(char::is_ascii_digit).count();
+    let well_formed = s
+        .chars()
+        .enumerate()
+        .all(|(i, c)| c.is_ascii_digit() || matches!(c, ' ' | '-' | '(' | ')') || (c == '+' && i == 0));
+    well_formed && digits >= 10
+}
+
 /// Minimal email sanity check: `local@domain` with a dot in the domain.
 fn valid_email(s: &str) -> bool {
     let s = s.trim();
@@ -558,6 +626,27 @@ fn valid_email(s: &str) -> bool {
             !local.is_empty() && domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
         }
         None => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{valid_email, valid_phone};
+
+    #[test]
+    fn phone_needs_ten_digits() {
+        assert!(valid_phone("5551234567"));
+        assert!(valid_phone("+1 (555) 123-4567"));
+        assert!(!valid_phone("12345"));
+        assert!(!valid_phone(""));
+        assert!(!valid_phone("555-CALL-NOW")); // letters not allowed
+        assert!(!valid_phone("1+5551234567")); // '+' only valid as a leading char
+    }
+
+    #[test]
+    fn email_still_validates() {
+        assert!(valid_email("a@b.com"));
+        assert!(!valid_email("nope"));
     }
 }
 
