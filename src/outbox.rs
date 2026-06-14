@@ -9,13 +9,13 @@
 //!
 //! Protocol — designed so the watcher never sees a half-written job:
 //!
-//!   1. `<id>.png`   — the composite, copied in and flushed first.
+//!   1. `<id>.jpg`   — the composite, copied in and flushed first.
 //!   2. `<id>.phone` — the destination number. Written to `<id>.phone.tmp` and
 //!                     then **renamed** into place. The rename is atomic, so the
 //!                     `.phone` sidecar only appears once the image is fully on
 //!                     disk.
 //!
-//! The watcher globs for `*.phone`, derives the matching `<id>.png`, sends, and
+//! The watcher globs for `*.phone`, derives the matching `<id>.jpg`, sends, and
 //! then moves both files into `sent/` (or `failed/`).
 
 use std::path::{Path, PathBuf};
@@ -39,9 +39,14 @@ pub fn queue(phone: &str, image_path: &Path) -> Result<(), String> {
     let id = job_id(image_path);
 
     // 1. Copy the composite in first, fully, so it's complete on disk before
-    //    the sidecar that points at it appears.
-    let png = dir.join(format!("{id}.png"));
-    std::fs::copy(image_path, &png)
+    //    the sidecar that points at it appears. Keep the source extension
+    //    (normally `jpg`) so the watcher can attach it without converting.
+    let ext = image_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("jpg");
+    let img_dst = dir.join(format!("{id}.{ext}"));
+    std::fs::copy(image_path, &img_dst)
         .map_err(|e| format!("copy composite to outbox: {e}"))?;
 
     // 2. Write the number to a temp file, then atomically rename it into place.
@@ -88,14 +93,14 @@ mod tests {
         // A fake composite in a session-style directory.
         let session = std::env::temp_dir().join("photobooth-9999");
         std::fs::create_dir_all(&session).unwrap();
-        let composite = session.join("composite.png");
-        std::fs::write(&composite, b"fake png bytes").unwrap();
+        let composite = session.join("composite.jpg");
+        std::fs::write(&composite, b"fake jpg bytes").unwrap();
 
         queue(" +1 555 123 4567 ", &composite).unwrap();
 
-        let png = dir.join("photobooth-9999.png");
+        let img = dir.join("photobooth-9999.jpg");
         let phone = dir.join("photobooth-9999.phone");
-        assert_eq!(std::fs::read(&png).unwrap(), b"fake png bytes");
+        assert_eq!(std::fs::read(&img).unwrap(), b"fake jpg bytes");
         // Number is trimmed and newline-terminated; no temp file left behind.
         assert_eq!(std::fs::read_to_string(&phone).unwrap(), "+1 555 123 4567\n");
         assert!(!dir.join("photobooth-9999.phone.tmp").exists());

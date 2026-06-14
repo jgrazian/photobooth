@@ -58,9 +58,17 @@ pub fn save_shot(dir: &Path, index: usize, bytes: &[u8], ext: &str) -> Result<Pa
     Ok(path)
 }
 
-/// Save the finished grid as `composite.png` in `dir`.
+/// Save the finished grid as `composite.jpg` in `dir`.
+///
+/// JPEG (not PNG) so the macOS iMessage sender can attach it directly with no
+/// conversion step. JPEG has no alpha channel, so it's dropped before encoding.
 pub fn save_composite(dir: &Path, image: &RgbaImage) -> Result<PathBuf, String> {
-    let path = dir.join("composite.png");
-    image.save(&path).map_err(|e| format!("save png: {e}"))?;
+    let path = dir.join("composite.jpg");
+    let rgb = image::DynamicImage::ImageRgba8(image.clone()).into_rgb8();
+    let mut file =
+        std::fs::File::create(&path).map_err(|e| format!("create {}: {e}", path.display()))?;
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut file, 88)
+        .encode_image(&rgb)
+        .map_err(|e| format!("encode jpg: {e}"))?;
     Ok(path)
 }

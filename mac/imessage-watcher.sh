@@ -37,6 +37,12 @@ GREETING="${PHOTOBOOTH_GREETING:-Thanks for visiting the photobooth! Here is you
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SENDER="$SCRIPT_DIR/send-imessage.applescript"
 
+# Local staging dir for images about to be sent. MUST be a location Messages is
+# allowed to read — ~/Pictures works; network shares and arbitrary temp paths do
+# not (the native send silently fails to attach). Images are also converted to
+# JPG here, which Messages attaches more reliably than PNG.
+STAGE_DIR="${PHOTOBOOTH_STAGE_DIR:-$HOME/Pictures/photobooth-staging}"
+
 log() { printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 
 if [[ ! -f "$SENDER" ]]; then
@@ -48,12 +54,16 @@ mkdir -p "$OUTBOX/sent" "$OUTBOX/failed" || {
 	log "ERROR: cannot create sent/ and failed/ under $OUTBOX (is the share mounted?)"
 	exit 1
 }
+mkdir -p "$STAGE_DIR" || {
+	log "ERROR: cannot create staging dir $STAGE_DIR"
+	exit 1
+}
 
 process_one() {
 	local phone_file="$1"
 	local base img phone
 	base="$(basename "$phone_file" .phone)"
-	img="$OUTBOX/$base.png"
+	img="$OUTBOX/$base.jpg"
 	phone="$(head -n1 "$phone_file" | tr -d '[:space:]')"
 
 	if [[ -z "$phone" ]]; then
@@ -64,17 +74,32 @@ process_one() {
 	if [[ ! -f "$img" ]]; then
 		# .phone exists but image missing — shouldn't happen given the write
 		# order, but never delete a number we can't fulfil.
-		log "WAIT $base: image $base.png not present yet"
+		log "WAIT $base: image $base.jpg not present yet"
 		return
 	fi
 
-	log "SEND $base -> $phone"
-	if osascript "$SENDER" "$phone" "$img" "$GREETING" >/dev/null 2>&1; then
+	# Messages can't attach a file straight off the network share, so stage a
+	# copy under ~/Pictures (a location Messages is allowed to read). The booth
+	# already produces JPG, so no conversion is needed.
+	local staged="$STAGE_DIR/$base.jpg"
+	if ! cp "$img" "$staged" 2>/dev/null; then
+		log "FAIL $base: could not stage local copy at $staged"
+		mv -f "$img" "$phone_file" "$OUTBOX/failed/" 2>/dev/null
+		return
+	fi
+	log "SEND $base -> $phone (staged $staged, $(wc -c <"$staged" | tr -d ' ') bytes)"
+
+	local err
+	err="$(osascript "$SENDER" "$phone" "$staged" "$GREETING" 2>&1 >/dev/null)"
+	local rc=$?
+	if [[ $rc -eq 0 ]]; then
+		rm -f "$staged"
 		mv -f "$img" "$phone_file" "$OUTBOX/sent/" 2>/dev/null
 		log "OK   $base"
 	else
+		# Leave the staged copy in place so it can be inspected after a failure.
 		mv -f "$img" "$phone_file" "$OUTBOX/failed/" 2>/dev/null
-		log "FAIL $base (moved to failed/ — check Messages is signed in & Automation is allowed)"
+		log "FAIL $base: ${err:-osascript error} (staged copy kept at $staged)"
 	fi
 }
 

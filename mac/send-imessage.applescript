@@ -1,13 +1,19 @@
 -- Send a file (and an optional greeting) to a phone number through the macOS
--- Messages app over iMessage.
+-- Messages app over iMessage, using the native Messages scripting API.
 --
 -- Usage:  osascript send-imessage.applescript "<phone>" "<file path>" ["<greeting>"]
 --
+-- IMPORTANT — file location: on recent macOS the native `send <file>` only
+-- attaches reliably when the file lives in a location Messages is allowed to
+-- read (e.g. ~/Pictures). Sending straight off a network share or from
+-- arbitrary temp paths silently fails (the text sends, the image doesn't). The
+-- watcher therefore stages a JPG copy under ~/Pictures and passes that path
+-- here. No GUI scripting / Accessibility permission is needed with this route.
+--
 -- Requirements:
 --   * Messages.app is signed in to an iMessage account.
---   * Whatever runs this (Terminal, the watcher, etc.) has been granted
---     Automation permission to control Messages
---     (System Settings → Privacy & Security → Automation).
+--   * The app running this (Terminal / the watcher) has Automation permission
+--     to control Messages (System Settings → Privacy & Security → Automation).
 --   * To reach a non-iPhone (SMS) number, set up Text Message Forwarding on
 --     your iPhone for this Mac; otherwise only iMessage-capable numbers work.
 

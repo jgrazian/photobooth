@@ -57,8 +57,13 @@ pub fn send_photo(to: &str, image_path: &Path) -> Result<(), String> {
     let filename = image_path
         .file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or("photobooth.png")
+        .unwrap_or("photobooth.jpg")
         .to_string();
+    let mime = match image_path.extension().and_then(|e| e.to_str()) {
+        Some(e) if e.eq_ignore_ascii_case("jpg") || e.eq_ignore_ascii_case("jpeg") => "image/jpeg",
+        Some(e) if e.eq_ignore_ascii_case("png") => "image/png",
+        _ => "application/octet-stream",
+    };
 
     let from = cfg
         .from
@@ -70,7 +75,7 @@ pub fn send_photo(to: &str, image_path: &Path) -> Result<(), String> {
 
     let attachment = Attachment::new(filename).body(
         bytes,
-        ContentType::parse("image/png").expect("image/png is a valid content type"),
+        ContentType::parse(mime).expect("derived MIME type is valid"),
     );
     let note = SinglePart::plain(
         "Thanks for visiting the photobooth! Your photo is attached.".to_string(),

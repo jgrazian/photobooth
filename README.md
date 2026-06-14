@@ -67,9 +67,16 @@ before the image; `""` to send only the image).
 **Mac requirements / gotchas:**
 
 - Messages.app must be signed in to iMessage.
-- The first send triggers a macOS **Automation** permission prompt — allow the
-  terminal/watcher to control Messages
-  (System Settings → Privacy & Security → Automation).
+- **Two permissions are required** for the app that runs the watcher (e.g.
+  Terminal): **Automation** (to control Messages + System Events) and
+  **Accessibility** (System Settings → Privacy & Security → Accessibility).
+  Accessibility is needed because, on recent macOS (Sonoma/Sequoia/Tahoe), the
+  clean `send <file> to buddy` AppleScript API silently fails to attach files —
+  so the sender loads the image onto the clipboard and GUI-scripts Messages to
+  paste and send it. Driving the UI requires Accessibility.
+- Because the send drives the UI, it briefly takes over Messages. If steps race
+  ahead of the UI on a slow machine, raise `PHOTOBOOTH_GUI_DELAY` (seconds per
+  step, default `0.8`).
 - To text a **non-iPhone** number you need **Text Message Forwarding** enabled on
   your iPhone for this Mac; otherwise only iMessage-capable numbers go through.
 - **Staying awake:** the watcher re-execs itself under `caffeinate` so the Mac
