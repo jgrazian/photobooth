@@ -7,10 +7,16 @@ use image::{Rgba, RgbaImage, imageops};
 
 /// Width each captured shot is scaled to inside the grid.
 const PANEL_W: u32 = 1000;
-/// Padding between panels and around the edge of the canvas.
-const GAP: u32 = 24;
+/// White border between adjacent panels (the interior border).
+const INNER_BORDER: u32 = 24;
+/// White border around the edge of the canvas, twice the interior border.
+const OUTER_BORDER: u32 = INNER_BORDER * 2;
 /// Canvas background colour (the "paper" behind the photos).
 const BG: Rgba<u8> = Rgba([250, 250, 250, 255]);
+
+/// Banner overlaid onto the bottom-left of the finished grid, embedded at build
+/// time so it travels with the binary regardless of the working directory.
+const BANNER_PNG: &[u8] = include_bytes!("../assets/banner.png");
 
 /// Arrange up to four shots into a 2x2 grid on a solid background.
 ///
@@ -23,20 +29,40 @@ pub fn build(shots: &[RgbaImage]) -> RgbaImage {
         .unwrap_or((3, 2));
     let panel_h = ((u64::from(PANEL_W) * u64::from(sh)) / u64::from(sw)) as u32;
 
-    let canvas_w = PANEL_W * 2 + GAP * 3;
-    let canvas_h = panel_h * 2 + GAP * 3;
+    // Two outer borders plus one interior border across each axis.
+    let canvas_w = OUTER_BORDER * 2 + PANEL_W * 2 + INNER_BORDER;
+    let canvas_h = OUTER_BORDER * 2 + panel_h * 2 + INNER_BORDER;
     let mut canvas = RgbaImage::from_pixel(canvas_w, canvas_h, BG);
 
     for (i, shot) in shots.iter().take(4).enumerate() {
         let resized = imageops::resize(shot, PANEL_W, panel_h, imageops::FilterType::Triangle);
         let col = (i % 2) as u32;
         let row = (i / 2) as u32;
-        let x = GAP + col * (PANEL_W + GAP);
-        let y = GAP + row * (panel_h + GAP);
+        let x = OUTER_BORDER + col * (PANEL_W + INNER_BORDER);
+        let y = OUTER_BORDER + row * (panel_h + INNER_BORDER);
         imageops::overlay(&mut canvas, &resized, i64::from(x), i64::from(y));
     }
 
+    overlay_banner(&mut canvas);
+
     canvas
+}
+
+/// Composite the embedded banner onto the bottom-left of the canvas, inset by
+/// the outer border so it aligns with the left and bottom edges of the panels.
+fn overlay_banner(canvas: &mut RgbaImage) {
+    let banner = match image::load_from_memory(BANNER_PNG) {
+        Ok(img) => img.into_rgba8(),
+        Err(e) => {
+            eprintln!("skip banner overlay: {e}");
+            return;
+        }
+    };
+    let x = OUTER_BORDER;
+    let y = canvas
+        .height()
+        .saturating_sub(OUTER_BORDER + banner.height());
+    imageops::overlay(canvas, &banner, i64::from(x), i64::from(y));
 }
 
 /// Create a fresh timestamped session directory, `./captures/photobooth-<ts>/`,
