@@ -31,7 +31,15 @@ on run argv
 		set targetBuddy to buddy targetPhone of targetService
 		if greeting is not "" then
 			send greeting to targetBuddy
+			-- Messages drops a second send fired immediately after the first;
+			-- give the greeting time to flush before sending the attachment,
+			-- otherwise the image silently fails to attach.
+			delay 2
 		end if
 		send theFile to targetBuddy
+		-- Let the attachment hand off to Messages before this script exits, so
+		-- the watcher doesn't move the staged copy out from under an in-flight
+		-- send.
+		delay 2
 	end tell
 end run

@@ -24,10 +24,16 @@ fn main() -> eframe::Result {
         return Ok(());
     }
 
+    // PHOTOBOOTH_FULLSCREEN (any non-empty value) launches straight into
+    // fullscreen — handy for kiosk/event use. F11 still toggles it at runtime.
+    let start_fullscreen = std::env::var_os("PHOTOBOOTH_FULLSCREEN")
+        .is_some_and(|v| !v.is_empty());
+
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 820.0])
             .with_min_inner_size([800.0, 600.0])
+            .with_fullscreen(start_fullscreen)
             .with_title("Photobooth"),
         ..Default::default()
     };

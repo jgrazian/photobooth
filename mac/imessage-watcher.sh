@@ -14,7 +14,7 @@
 # sent/ (or failed/ on error) so they are processed exactly once.
 #
 # Configuration (environment variables):
-#   PHOTOBOOTH_OUTBOX         outbox folder to watch   (default: ~/photobooth-outbox)
+#   PHOTOBOOTH_OUTBOX         outbox folder to watch   (default: /Volumes/outbox)
 #   PHOTOBOOTH_POLL_SECONDS   poll interval in seconds (default: 3)
 #   PHOTOBOOTH_GREETING       text sent before the image ("" to send no text)
 #
@@ -30,7 +30,15 @@ if [[ "${PHOTOBOOTH_CAFFEINATED:-}" != "1" ]]; then
 	exec env PHOTOBOOTH_CAFFEINATED=1 caffeinate -dimsu "$0" "$@"
 fi
 
-OUTBOX="${PHOTOBOOTH_OUTBOX:-$HOME/photobooth-outbox}"
+OUTBOX="${PHOTOBOOTH_OUTBOX:-/Volumes/outbox}"
+
+# A URL (e.g. smb://host/outbox) is not a filesystem path — the shell tools below
+# would silently create literal "smb:" junk dirs and watch an empty path. Mount
+# the share first and point at the mount, e.g. /Volumes/outbox.
+if [[ "$OUTBOX" == *://* ]]; then
+	echo "ERROR: PHOTOBOOTH_OUTBOX looks like a URL ($OUTBOX). Mount the share first and point at the mount path, e.g. /Volumes/outbox" >&2
+	exit 1
+fi
 POLL_SECONDS="${PHOTOBOOTH_POLL_SECONDS:-3}"
 GREETING="${PHOTOBOOTH_GREETING:-Thanks for visiting the photobooth! Here is your photo 📸}"
 
@@ -81,13 +89,38 @@ process_one() {
 	# Messages can't attach a file straight off the network share, so stage a
 	# copy under ~/Pictures (a location Messages is allowed to read). The booth
 	# already produces JPG, so no conversion is needed.
+	#
+	# Copy to a temp name first, then verify the staged copy is complete (same
+	# byte count as the source, and non-zero) before renaming it into place and
+	# sending. A flaky SMB read can leave a truncated file even when cp returns
+	# success; without this check Messages would attach a partial/corrupt image.
+	# Retry an incomplete copy a few times before giving up — transient share
+	# hiccups usually clear on a second attempt.
 	local staged="$STAGE_DIR/$base.jpg"
-	if ! cp "$img" "$staged" 2>/dev/null; then
-		log "FAIL $base: could not stage local copy at $staged"
+	local staging="$staged.partial"
+	local src_size staged_size attempt staged_ok=
+	for attempt in 1 2 3; do
+		rm -f "$staging"
+		if ! cp "$img" "$staging" 2>/dev/null; then
+			log "RETRY $base: copy to $staging failed (attempt $attempt/3)"
+			continue
+		fi
+		src_size="$(wc -c <"$img" 2>/dev/null | tr -d ' ')"
+		staged_size="$(wc -c <"$staging" 2>/dev/null | tr -d ' ')"
+		if [[ -n "$staged_size" && "$staged_size" -ne 0 && "$staged_size" == "$src_size" ]]; then
+			staged_ok=1
+			break
+		fi
+		log "RETRY $base: staged copy incomplete (src=${src_size:-?} staged=${staged_size:-?} bytes, attempt $attempt/3)"
+	done
+	if [[ -z "$staged_ok" ]]; then
+		log "FAIL $base: could not stage a complete local copy after 3 attempts"
+		rm -f "$staging"
 		mv -f "$img" "$phone_file" "$OUTBOX/failed/" 2>/dev/null
 		return
 	fi
-	log "SEND $base -> $phone (staged $staged, $(wc -c <"$staged" | tr -d ' ') bytes)"
+	mv -f "$staging" "$staged"
+	log "SEND $base -> $phone (staged $staged, $staged_size bytes)"
 
 	local err
 	err="$(osascript "$SENDER" "$phone" "$staged" "$GREETING" 2>&1 >/dev/null)"
